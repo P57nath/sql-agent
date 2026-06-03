@@ -14,7 +14,8 @@
       "PowerShell(Start-Sleep -Seconds 3; try { Invoke-RestMethod -Uri \"http://localhost:8000/health\" -Method GET } catch { $_.Exception.Message })",
       "PowerShell(Stop-Process *)",
       "PowerShell(ollama *)",
-      "PowerShell(winget *)"
+      "PowerShell(winget *)",
+      "PowerShell(Get-ChildItem -Recurse -Force -Attributes !Directory | Where-Object { $_.FullName -notmatch '\\\\.git|\\\\.venv|__pycache__|\\\\.pytest_cache' } | Select-Object FullName | Sort-Object FullName)"
     ]
   }
 }
