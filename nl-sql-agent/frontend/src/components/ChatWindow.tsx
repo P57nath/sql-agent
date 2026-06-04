@@ -11,13 +11,6 @@ interface ChatMessage {
   rowCount?: number | null;
 }
 
-const SAMPLE_QUESTIONS = [
-  "What are our top 5 customers by total revenue?",
-  "How many orders were placed this week?",
-  "Which product category has the highest average order value?",
-  "Show me all pending orders with customer names.",
-];
-
 export function ChatWindow() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -59,28 +52,17 @@ export function ChatWindow() {
     <div className="flex h-screen flex-col bg-white">
       {/* Header */}
       <header className="border-b border-slate-200 px-6 py-4">
-        <h1 className="text-lg font-semibold text-slate-800">
-          Data Assistant
-        </h1>
-        <p className="text-sm text-slate-400">Ask questions about your data</p>
+        <h1 className="text-lg font-semibold text-slate-800">Data Assistant</h1>
+        <p className="text-sm text-slate-400">Ask questions about your database in plain English</p>
       </header>
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-6 py-4">
         {messages.length === 0 && (
-          <div className="mt-10 text-center">
-            <p className="mb-4 text-sm text-slate-400">Try asking:</p>
-            <div className="flex flex-col gap-2">
-              {SAMPLE_QUESTIONS.map((q) => (
-                <button
-                  key={q}
-                  onClick={() => send(q)}
-                  className="mx-auto rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600 hover:bg-slate-50"
-                >
-                  {q}
-                </button>
-              ))}
-            </div>
+          <div className="mt-20 text-center text-slate-400">
+            <p className="text-4xl mb-4">🗄️</p>
+            <p className="text-sm font-medium text-slate-600">Your database is ready</p>
+            <p className="text-sm mt-1">Ask anything — summaries, counts, filters, joins.</p>
           </div>
         )}
         {messages.map((m, i) => (
@@ -89,7 +71,7 @@ export function ChatWindow() {
         {loading && (
           <div className="mb-4 flex justify-start">
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-500">
-              Querying database…
+              Thinking…
             </div>
           </div>
         )}

@@ -25,6 +25,12 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+async def on_startup() -> None:
+    """Fetch the database schema once so the first user request is fast."""
+    await asyncio.to_thread(agent_module.warmup)
+
+
 class AskRequest(BaseModel):
     question: str
     session_id: Optional[str] = None

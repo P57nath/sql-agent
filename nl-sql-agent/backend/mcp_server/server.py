@@ -1,22 +1,17 @@
 """
-MCP server exposing three tools:
-  - list_tables  → compact table catalogue (names, column count, links)
-  - get_schema   → full column detail for specific tables only
-  - run_query    → executes a validated SELECT and returns rows as JSON
+Database access layer.
+  - fetch_schema_text() : reads the full schema once at startup
+  - run_query(sql)      : executes a validated SELECT and returns JSON
 """
 import json
 import os
 import threading
-import time
 from typing import Any
 
 import psycopg2
 import psycopg2.extras
 from psycopg2 import pool as pg_pool
 from dotenv import load_dotenv
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
 
 from .guardrails import GuardrailError, validate_query
 
@@ -26,15 +21,9 @@ DATABASE_URL: str = os.environ["DATABASE_URL"]
 MAX_ROWS: int = int(os.getenv("MAX_ROWS", "50"))
 QUERY_TIMEOUT: int = int(os.getenv("QUERY_TIMEOUT_SECONDS", "10"))
 ALLOWED_SCHEMAS: list[str] = os.getenv("ALLOWED_SCHEMAS", "public").split(",")
-_TABLES_TTL: int = int(os.getenv("SCHEMA_CACHE_TTL_SECONDS", "300"))
 
-# Connection pool — reuses TCP connections instead of opening a new one each call
 _pool: pg_pool.ThreadedConnectionPool | None = None
 _pool_lock = threading.Lock()
-
-# Table catalogue cache (list_tables result) — cached for _TABLES_TTL seconds
-_tables_cache: str | None = None
-_tables_cache_time: float = 0.0
 
 
 def _get_pool() -> pg_pool.ThreadedConnectionPool:
@@ -51,140 +40,14 @@ def _get_pool() -> pg_pool.ThreadedConnectionPool:
     return _pool
 
 
-app = Server("nl-sql-agent")
+def fetch_schema_text() -> str:
+    """
+    Read the full database schema and return it as a plain-text string
+    ready to be embedded in the LLM system prompt.
 
-
-@app.list_tools()
-async def list_tools() -> list[Tool]:
-    return [
-        Tool(
-            name="list_tables",
-            description=(
-                "Returns a compact catalogue of every table: name, column count, "
-                "table comment, and which other tables it links to via foreign keys. "
-                "Always call this FIRST to identify which tables are relevant to the question."
-            ),
-            inputSchema={"type": "object", "properties": {}, "required": []},
-        ),
-        Tool(
-            name="get_schema",
-            description=(
-                "Fetch full column details (names, types, nullability, comments, FK relationships) "
-                "for a specific list of tables. Call list_tables first, then call this with only "
-                "the tables you actually need — do not fetch all tables."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "tables": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Table names to fetch schema for.",
-                    }
-                },
-                "required": ["tables"],
-            },
-        ),
-        Tool(
-            name="run_query",
-            description=(
-                "Execute a read-only SELECT query against the database. "
-                f"Returns columns and up to {MAX_ROWS} rows as JSON. "
-                "Only SELECT statements are allowed — no writes."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "sql": {
-                        "type": "string",
-                        "description": "A valid SELECT SQL statement.",
-                    }
-                },
-                "required": ["sql"],
-            },
-        ),
-    ]
-
-
-@app.call_tool()
-async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-    if name == "list_tables":
-        return [TextContent(type="text", text=_list_tables())]
-    if name == "get_schema":
-        return [TextContent(type="text", text=_get_schema(arguments.get("tables", [])))]
-    if name == "run_query":
-        return [TextContent(type="text", text=_run_query(arguments["sql"]))]
-    raise ValueError(f"Unknown tool: {name}")
-
-
-def _list_tables() -> str:
-    """Return a compact table catalogue. Cached for _TABLES_TTL seconds."""
-    global _tables_cache, _tables_cache_time
-    now = time.monotonic()
-    if _tables_cache is not None and (now - _tables_cache_time) < _TABLES_TTL:
-        return _tables_cache
-
-    pool = _get_pool()
-    conn = pool.getconn()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT
-                    c.relname              AS table_name,
-                    obj_description(c.oid) AS table_comment,
-                    COUNT(a.attnum)        AS column_count
-                FROM pg_catalog.pg_class c
-                JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                LEFT JOIN pg_catalog.pg_attribute a
-                    ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
-                WHERE n.nspname = ANY(%s) AND c.relkind = 'r'
-                GROUP BY c.relname, c.oid
-                ORDER BY c.relname
-                """,
-                (ALLOWED_SCHEMAS,),
-            )
-            tables = cur.fetchall()
-
-            cur.execute(
-                """
-                SELECT
-                    c.relname  AS from_table,
-                    fc.relname AS to_table
-                FROM pg_catalog.pg_constraint con
-                JOIN pg_catalog.pg_class c  ON c.oid  = con.conrelid
-                JOIN pg_catalog.pg_class fc ON fc.oid = con.confrelid
-                JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                WHERE con.contype = 'f' AND n.nspname = ANY(%s)
-                """,
-                (ALLOWED_SCHEMAS,),
-            )
-            fks = cur.fetchall()
-        conn.rollback()
-    finally:
-        pool.putconn(conn)
-
-    links: dict[str, list[str]] = {}
-    for fk in fks:
-        links.setdefault(fk["from_table"], []).append(fk["to_table"])
-
-    catalogue: dict[str, Any] = {
-        t["table_name"]: {
-            "columns": t["column_count"],
-            "comment": t["table_comment"],
-            "links_to": links.get(t["table_name"], []),
-        }
-        for t in tables
-    }
-
-    result = json.dumps(catalogue, default=str)
-    _tables_cache = result
-    _tables_cache_time = now
-    return result
-
-
-def _get_schema(tables: list[str]) -> str:
-    """Return full column detail for the requested tables using pg_catalog (fast)."""
+    Uses pg_catalog (fast) instead of information_schema.
+    Called once at startup; the result is cached by agent.py.
+    """
     pool = _get_pool()
     conn = pool.getconn()
     try:
@@ -201,12 +64,12 @@ def _get_schema(tables: list[str]) -> str:
                 JOIN pg_catalog.pg_class c     ON c.oid = a.attrelid
                 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
                 WHERE n.nspname = ANY(%s)
-                  AND c.relname = ANY(%s)
+                  AND c.relkind = 'r'
                   AND a.attnum > 0
                   AND NOT a.attisdropped
                 ORDER BY c.relname, a.attnum
                 """,
-                (ALLOWED_SCHEMAS, tables),
+                (ALLOWED_SCHEMAS,),
             )
             columns = cur.fetchall()
 
@@ -220,44 +83,50 @@ def _get_schema(tables: list[str]) -> str:
                 FROM pg_catalog.pg_constraint con
                 JOIN pg_catalog.pg_class c  ON c.oid  = con.conrelid
                 JOIN pg_catalog.pg_class fc ON fc.oid = con.confrelid
-                JOIN pg_catalog.pg_namespace n  ON n.oid  = c.relnamespace
+                JOIN pg_catalog.pg_namespace n  ON n.oid = c.relnamespace
                 JOIN pg_catalog.pg_attribute a  ON a.attrelid  = con.conrelid  AND a.attnum  = con.conkey[1]
                 JOIN pg_catalog.pg_attribute fa ON fa.attrelid = con.confrelid AND fa.attnum = con.confkey[1]
-                WHERE con.contype = 'f'
-                  AND n.nspname = ANY(%s)
-                  AND c.relname = ANY(%s)
+                WHERE con.contype = 'f' AND n.nspname = ANY(%s)
                 """,
-                (ALLOWED_SCHEMAS, tables),
+                (ALLOWED_SCHEMAS,),
             )
             fks = cur.fetchall()
         conn.rollback()
     finally:
         pool.putconn(conn)
 
-    schema: dict[str, Any] = {}
+    # Build FK lookup: "table.col" → "ref_table.ref_col"
+    fk_map: dict[str, str] = {
+        f"{r['from_table']}.{r['from_col']}": f"{r['to_table']}.{r['to_col']}"
+        for r in fks
+    }
+
+    # Group columns by table
+    tables: dict[str, list[Any]] = {}
     for row in columns:
-        tbl = row["table_name"]
-        schema.setdefault(tbl, {"columns": [], "foreign_keys": []})
-        schema[tbl]["columns"].append(
-            {
-                "name": row["column_name"],
-                "type": row["data_type"],
-                "nullable": row["is_nullable"],
-                "comment": row["column_comment"],
-            }
-        )
-    for fk in fks:
-        tbl = fk["from_table"]
-        if tbl in schema:
-            schema[tbl]["foreign_keys"].append(
-                f"{fk['from_col']} → {fk['to_table']}.{fk['to_col']}"
-            )
+        tables.setdefault(row["table_name"], []).append(row)
 
-    return json.dumps(schema, default=str)
+    # Render compact, human-readable schema text
+    lines: list[str] = []
+    for table_name, cols in tables.items():
+        lines.append(f"Table: {table_name}")
+        for col in cols:
+            parts = [f"  {col['column_name']:<22} {col['data_type']}"]
+            if not col["is_nullable"]:
+                parts.append("NOT NULL")
+            fk = fk_map.get(f"{table_name}.{col['column_name']}")
+            if fk:
+                parts.append(f"→ {fk}")
+            if col["column_comment"]:
+                parts.append(f"({col['column_comment']})")
+            lines.append(" ".join(parts))
+        lines.append("")
+
+    return "\n".join(lines).strip()
 
 
-def _run_query(sql: str) -> str:
-    """Validate then execute a SELECT query. Returns JSON."""
+def run_query(sql: str) -> str:
+    """Validate and execute a SELECT query. Returns a JSON string."""
     try:
         safe_sql = validate_query(sql, max_rows=MAX_ROWS)
     except GuardrailError as exc:
@@ -286,8 +155,3 @@ def _run_query(sql: str) -> str:
         return json.dumps({"error": str(exc)})
     finally:
         pool.putconn(conn)
-
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(stdio_server(app))
