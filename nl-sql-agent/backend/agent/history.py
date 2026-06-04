@@ -9,10 +9,11 @@ class Message(TypedDict):
 
 
 _store: dict[str, list[Message]] = defaultdict(list)
+_MAX_HISTORY = 10  # keep last 10 messages (5 turns) to bound context size
 
 
 def get(session_id: str) -> list[Message]:
-    return list(_store[session_id])
+    return list(_store[session_id][-_MAX_HISTORY:])
 
 
 def append(session_id: str, role: str, content: str) -> None:

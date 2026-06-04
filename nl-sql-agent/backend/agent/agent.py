@@ -6,8 +6,6 @@ Agent orchestration — two backends selectable via AGENT_BACKEND env var:
 """
 import json
 import os
-import sys
-from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -19,16 +17,18 @@ AGENT_BACKEND: str = os.getenv("AGENT_BACKEND", "ollama")
 
 SYSTEM_PROMPT = """You are a friendly, expert data analyst assistant.
 
-You have access to a live business database via two tools:
-- get_schema: Always call this FIRST to understand the database structure.
-- run_query: Execute a safe SELECT query and get results.
+You have access to a live business database via three tools:
+- list_tables : Always call this FIRST. Returns every table name, its column count, and which tables it links to.
+- get_schema  : Call this with only the tables relevant to the question. Returns full column details and FK relationships.
+- run_query   : Execute a safe SELECT query and get results.
 
 Your workflow for every question:
-1. Call get_schema to understand tables and relationships.
-2. Write a precise, efficient SQL SELECT query.
-3. Call run_query with that SQL.
-4. Interpret the results and give a clear, plain-English answer.
-5. If relevant, mention the SQL you used (briefly).
+1. Call list_tables to discover available tables.
+2. Identify which tables are needed, then call get_schema with only those table names.
+3. Write a precise, efficient SQL SELECT query based on the schema.
+4. Call run_query with that SQL.
+5. Interpret the results and give a clear, plain-English answer.
+6. If relevant, mention the SQL you used (briefly).
 
 Rules:
 - Only write SELECT statements. Never INSERT, UPDATE, DELETE, or DROP.
@@ -43,13 +43,35 @@ _TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "get_schema",
+            "name": "list_tables",
             "description": (
-                "Fetch the database schema: table names, column names, data types, "
-                "nullability, and foreign key relationships. "
-                "Always call this FIRST before writing any SQL."
+                "Returns a compact catalogue of every table: name, column count, "
+                "table comment, and which other tables it links to via foreign keys. "
+                "Always call this FIRST to identify which tables are relevant to the question."
             ),
             "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_schema",
+            "description": (
+                "Fetch full column details (names, types, nullability, comments, FK relationships) "
+                "for a specific list of tables. Call list_tables first, then call this with only "
+                "the tables you actually need — do not fetch all tables."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tables": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Table names to fetch schema for.",
+                    }
+                },
+                "required": ["tables"],
+            },
         },
     },
     {
@@ -77,11 +99,13 @@ _TOOLS = [
 
 def _execute_tool(name: str, arguments_json: str) -> str:
     """Call mcp_server Python functions directly — no subprocess needed."""
-    from mcp_server.server import _get_schema, _run_query
+    from mcp_server.server import _get_schema, _list_tables, _run_query
 
     args: dict = json.loads(arguments_json) if arguments_json else {}
+    if name == "list_tables":
+        return _list_tables()
     if name == "get_schema":
-        return _get_schema()
+        return _get_schema(args.get("tables", []))
     if name == "run_query":
         return _run_query(args.get("sql", ""))
     return json.dumps({"error": f"Unknown tool: {name}"})
@@ -117,7 +141,6 @@ def _ask_ollama(messages: list[dict]) -> dict:
             tool_choice="auto",
         )
         msg = resp.choices[0].message
-        # Append assistant turn (serialise to plain dict for the next request)
         chat.append(msg.model_dump(exclude_unset=True, exclude_none=True))
 
         if not msg.tool_calls:
@@ -152,52 +175,6 @@ def _ask_ollama(messages: list[dict]) -> dict:
     }
 
 
-# def _ask_anthropic(messages: list[dict]) -> dict:
-#     """Uses Anthropic's built-in MCP client beta."""
-#     import anthropic
-
-#     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-#     server_dir = str(Path(__file__).parent.parent)
-
-#     resp = client.beta.messages.create(
-#         model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
-#         max_tokens=2048,
-#         system=SYSTEM_PROMPT,
-#         messages=messages,
-#         mcp_servers=[
-#             {
-#                 "type": "stdio",
-#                 "name": "database",
-#                 "command": sys.executable,
-#                 "args": ["-m", "mcp_server.server"],
-#                 "cwd": server_dir,
-#                 "env": {k: v for k, v in os.environ.items() if v is not None},
-#             }
-#         ],
-#         betas=["mcp-client-2025-04-04"],
-#     )
-
-#     answer = ""
-#     sql_used = None
-#     row_count = None
-
-#     for block in resp.content:
-#         if hasattr(block, "text"):
-#             answer = block.text
-#         if hasattr(block, "type") and block.type == "tool_result":
-#             try:
-#                 raw = block.content[0].text if block.content else ""
-#                 data = json.loads(raw)
-#                 if "sql_executed" in data:
-#                     sql_used = data["sql_executed"]
-#                 if "row_count" in data:
-#                     row_count = data["row_count"]
-#             except Exception:
-#                 pass
-
-#     return {"answer": answer, "sql_used": sql_used, "row_count": row_count}
-
-
 def ask(question: str, session_id: str = "default") -> dict:
     """
     Send a question to the configured LLM backend.
@@ -207,10 +184,7 @@ def ask(question: str, session_id: str = "default") -> dict:
     append(session_id, "user", question)
     messages: list[dict] = [*history, {"role": "user", "content": question}]
 
-    if AGENT_BACKEND == "anthropic":
-        result = _ask_anthropic(messages)
-    else:
-        result = _ask_ollama(messages)
+    result = _ask_ollama(messages)
 
     append(session_id, "assistant", result["answer"])
     return {**result, "session_id": session_id}
