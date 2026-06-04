@@ -143,50 +143,50 @@ def _ask_ollama(messages: list[dict]) -> dict:
     }
 
 
-def _ask_anthropic(messages: list[dict]) -> dict:
-    """Uses Anthropic's built-in MCP client beta."""
-    import anthropic
+# def _ask_anthropic(messages: list[dict]) -> dict:
+#     """Uses Anthropic's built-in MCP client beta."""
+#     import anthropic
 
-    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    server_dir = str(Path(__file__).parent.parent)
+#     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+#     server_dir = str(Path(__file__).parent.parent)
 
-    resp = client.beta.messages.create(
-        model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
-        max_tokens=2048,
-        system=SYSTEM_PROMPT,
-        messages=messages,
-        mcp_servers=[
-            {
-                "type": "stdio",
-                "name": "database",
-                "command": sys.executable,
-                "args": ["-m", "mcp_server.server"],
-                "cwd": server_dir,
-                "env": {k: v for k, v in os.environ.items() if v is not None},
-            }
-        ],
-        betas=["mcp-client-2025-04-04"],
-    )
+#     resp = client.beta.messages.create(
+#         model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+#         max_tokens=2048,
+#         system=SYSTEM_PROMPT,
+#         messages=messages,
+#         mcp_servers=[
+#             {
+#                 "type": "stdio",
+#                 "name": "database",
+#                 "command": sys.executable,
+#                 "args": ["-m", "mcp_server.server"],
+#                 "cwd": server_dir,
+#                 "env": {k: v for k, v in os.environ.items() if v is not None},
+#             }
+#         ],
+#         betas=["mcp-client-2025-04-04"],
+#     )
 
-    answer = ""
-    sql_used = None
-    row_count = None
+#     answer = ""
+#     sql_used = None
+#     row_count = None
 
-    for block in resp.content:
-        if hasattr(block, "text"):
-            answer = block.text
-        if hasattr(block, "type") and block.type == "tool_result":
-            try:
-                raw = block.content[0].text if block.content else ""
-                data = json.loads(raw)
-                if "sql_executed" in data:
-                    sql_used = data["sql_executed"]
-                if "row_count" in data:
-                    row_count = data["row_count"]
-            except Exception:
-                pass
+#     for block in resp.content:
+#         if hasattr(block, "text"):
+#             answer = block.text
+#         if hasattr(block, "type") and block.type == "tool_result":
+#             try:
+#                 raw = block.content[0].text if block.content else ""
+#                 data = json.loads(raw)
+#                 if "sql_executed" in data:
+#                     sql_used = data["sql_executed"]
+#                 if "row_count" in data:
+#                     row_count = data["row_count"]
+#             except Exception:
+#                 pass
 
-    return {"answer": answer, "sql_used": sql_used, "row_count": row_count}
+#     return {"answer": answer, "sql_used": sql_used, "row_count": row_count}
 
 
 def ask(question: str, session_id: str = "default") -> dict:
