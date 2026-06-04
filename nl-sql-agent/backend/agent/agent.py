@@ -87,14 +87,23 @@ def _execute_tool(name: str, arguments_json: str) -> str:
     return json.dumps({"error": f"Unknown tool: {name}"})
 
 
+_ollama_client: "OpenAI | None" = None  # type: ignore[name-defined]
+
+
+def _get_ollama_client() -> "OpenAI":  # type: ignore[name-defined]
+    global _ollama_client
+    if _ollama_client is None:
+        from openai import OpenAI
+        _ollama_client = OpenAI(
+            base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
+            api_key="ollama",
+        )
+    return _ollama_client
+
+
 def _ask_ollama(messages: list[dict]) -> dict:
     """Agentic loop against Ollama's OpenAI-compatible endpoint."""
-    from openai import OpenAI
-
-    client = OpenAI(
-        base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
-        api_key="ollama",
-    )
+    client = _get_ollama_client()
     model = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
     chat: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}, *messages]
     sql_used: str | None = None

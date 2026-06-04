@@ -35,6 +35,23 @@ CREATE TABLE order_items (
     unit_price  NUMERIC(10, 2) NOT NULL
 );
 
+-- Column comments — used by the LLM to understand field intent
+COMMENT ON COLUMN customers.country       IS 'ISO 2-letter country code (e.g. US, UK, BD, SG)';
+COMMENT ON COLUMN customers.created_at    IS 'Timestamp when the customer account was created';
+
+COMMENT ON COLUMN products.category      IS 'Product category: Software, Service, or Credits';
+COMMENT ON COLUMN products.unit_price     IS 'Current list price; may differ from the price charged at order time';
+COMMENT ON COLUMN products.stock_qty      IS 'Units currently in stock';
+
+COMMENT ON COLUMN orders.customer_id     IS 'FK → customers.id — which customer placed this order';
+COMMENT ON COLUMN orders.status          IS 'Order lifecycle: pending → paid → shipped; or cancelled';
+COMMENT ON COLUMN orders.created_at      IS 'Timestamp when the order was placed';
+
+COMMENT ON COLUMN order_items.order_id   IS 'FK → orders.id';
+COMMENT ON COLUMN order_items.product_id IS 'FK → products.id';
+COMMENT ON COLUMN order_items.quantity   IS 'Number of units purchased';
+COMMENT ON COLUMN order_items.unit_price IS 'Price per unit at the time of purchase — always use this for revenue calculations, not products.unit_price';
+
 -- Seed data
 INSERT INTO customers (name, email, country) VALUES
   ('Acme Corp',      'billing@acme.com',     'US'),

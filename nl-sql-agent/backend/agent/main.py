@@ -1,4 +1,5 @@
 """FastAPI entry point for the NL → SQL agent."""
+import asyncio
 import os
 import uuid
 from typing import Optional
@@ -40,7 +41,7 @@ class AskResponse(BaseModel):
 async def ask(req: AskRequest) -> AskResponse:
     session_id = req.session_id or str(uuid.uuid4())
     try:
-        result = agent_module.ask(req.question, session_id)
+        result = await asyncio.to_thread(agent_module.ask, req.question, session_id)
         return AskResponse(**result)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
